@@ -36,7 +36,7 @@ Bearer token required in `Authorization` header. `GET /api/projects`, `GET /api/
 
 ## Deployment and limitations
 
-This server is localhost-only and intentionally cannot be deployed as a Vercel static project. Before publishing: implement Supabase Auth, database persistence, production token management, scheduled adapters, HTTPS, rate limiting, and desktop packaging. No service-role key belongs in the browser or git. The repository cannot be created via the available GitHub connector, which exposes file/commit operations but no repository creation action. Once a repository is created with the GitHub UI, `git remote add origin https://github.com/aachaman52/Aachman-Control-Center.git && git push -u origin main` publishes this checkout.
+This server is localhost-only and intentionally cannot be deployed as a Vercel static project. Before publishing: implement Supabase Auth, database persistence, production token management, scheduled adapters, HTTPS, rate limiting, and desktop packaging. No service-role key belongs in the browser or git. Source repository: `https://github.com/aachaman52/DashBoard-`. Clone it with `git clone https://github.com/aachaman52/DashBoard-.git`.
 
 ## Checks
 
