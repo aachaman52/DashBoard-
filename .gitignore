@@ -4,4 +4,9 @@
 node_modules/
 data/
 dist/
+.next/
+.vercel/
+*.tsbuildinfo
+__pycache__/
+CLAUDE.md
 .DS_Store

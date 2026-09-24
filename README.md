@@ -1,43 +1,56 @@
 # Aachman Studios Control Center
 
-An internal dashboard foundation for GitHub project discovery, repository activity, opt-in Windows app timing, study/development balance, CSV export, and a protected machine-readable API. **This is an early working slice, not the full production MVP in the brief.** Traffic, SEO, Supabase Auth, Vercel, PostHog, Windsor.ai, scheduled sync, and an actual Tauri desktop package are not wired up. The UI labels these as unavailable.
+A private dashboard for development, deployment, SEO, analytics, marketing and personal focus. The web app uses Next.js 16 and Supabase Auth with owner scoped RLS. The Windows collector is opt in and writes activity directly to the authenticated user's Supabase rows.
 
-## Run
+## What works
 
-Node 20+ required. No npm dependencies.
+- Email/password sign-in, project discovery from GitHub, commit ingestion, project mapping.
+- Vercel deployment, PostHog events, Search Console metrics and Windsor Instagram adapters when server credentials are configured.
+- Technical homepage SEO checks with stored history; activity timeline; study/development summaries; CSV and XLSX downloads; read-only AI JSON endpoint.
+- Daily cron endpoint with a server-only secret and Supabase service credential. No fabricated traffic or skill scores.
+
+**Setup is still required:** provider credentials, project IDs/properties, a deployed site, and a signed-in account. The collector has not been tested on a physical Windows machine. Tauri packaging, Google OAuth token refresh, a complete multi-page crawler, and an LLM-generated daily brief are not implemented. The dashboard shows unavailable data honestly.
+
+## Local development
+
+Node 20+ is required. Copy `.env.example` to `.env.local` and set the Supabase project URL and publishable key. Then:
 
 ```bash
-export CONTROL_CENTER_TOKEN="replace-with-a-random-secret-of-at-least-32-characters"
-npm start
+npm ci
+npm run dev
+npm run check
 ```
 
-Open `http://127.0.0.1:3000` and enter the same token. Optional `GITHUB_TOKEN` unlocks private repository access and higher rate limits. The current discovery route uses the public user repository endpoint, so private repo discovery still needs a future authenticated `/user/repos` adapter. All API routes require the token. Keep this server bound to localhost until Supabase Auth and hardened production deployment exist.
+The `cc_` schema migrations were applied to the existing Aachman Studios Supabase project. They are in `supabase/migrations/0002_control_center.sql` and `0003_metric_upsert.sql` for reproducibility. Never apply the older `0001_initial.sql` to that project; it belongs to the discontinued local prototype. Existing product tables were not altered. Every `cc_` table has RLS.
 
-Windows collector: install Python 3.10+, set `CONTROL_CENTER_TOKEN` in its environment, then run `python collector/windows.py`. It records executable name and start/end times, groups idle after two minutes, and uploads only when running. Ctrl+C stops it. It does not capture titles, keystrokes, messages, clipboard, screenshots, microphone, or webcam. Local sessions live in `data/activity.ndjson` and can be erased by deleting that file while the server is stopped.
+## First use
+
+1. Sign in or sign up with the Aachman Studios Supabase account.
+2. Press **Sync GitHub**. Public repositories are discovered automatically. To include private repositories, configure `GITHUB_TOKEN` with the minimum necessary repository read access.
+3. In Projects, map each relevant repository to its HTTPS website, Vercel project ID, PostHog project ID, or Search Console property.
+4. Trigger provider syncs. Credentials are server environment variables: `VERCEL_TOKEN`, `POSTHOG_PERSONAL_API_KEY`, `GOOGLE_SEARCH_CONSOLE_ACCESS_TOKEN`, `WINDSOR_API_KEY`, `WINDSOR_INSTAGRAM_ACCOUNT_ID`. Windsor's API key is sent only to its server-side API. Do not expose these in `NEXT_PUBLIC_*`.
+5. For daily server sync, set `CRON_SECRET` and `SUPABASE_SERVICE_ROLE_KEY` in Vercel. The cron runs at 03:00 UTC. The service role belongs only in server environment variables.
+
+Search Console's access token expires. An OAuth refresh flow must be added before this connection can remain automatic indefinitely. Provider access and their account-specific permissions cannot be inherited from ChatGPT plugins into the deployed app.
+
+## Desktop collector
+
+On Windows, install Python 3.10+ and `pip install keyring`. Set `CONTROL_CENTER_URL` to the deployed dashboard URL, then run `python collector/windows.py`. Sign in once; the refresh token is stored using Windows Credential Manager. Type `pause`, `resume`, or `quit` in its terminal. It records foreground executable name, category, and elapsed time, not window titles, text, keystrokes, messages, clipboard, screenshots, microphone, or webcam. Windows execution must be tested on the actual machine before treating desktop activity as verified.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-  A[Browser or PWA] --> B[Local Node API]
-  C[Windows collector] --> B
-  B --> D[GitHub API]
-  B --> E[Local activity file]
-  F[Supabase migration] -. future persistence .-> B
+  A[Web and mobile PWA] --> B[Next API]
+  B --> C[Supabase Auth and RLS]
+  B --> D[Provider adapters]
+  E[Windows collector] --> C
+  F[Vercel cron] --> B
+  B --> G[Read only AI API]
 ```
 
-## API
+The read-only analytics API is `GET /api/ai?kind=projects|development|deployments|seo|analytics|marketing|activity|skills|alerts` with a Supabase access token in `Authorization: Bearer ...`. `POST /api/sync` is separate and requires sign-in. The old Node prototype under `src/` and old static files in `public/` are historical only; Next.js serves the current application.
 
-Bearer token required in `Authorization` header. `GET /api/projects`, `GET /api/projects/{repo}/activity`, `GET /api/activity`, `GET /api/summary`, `GET /api/export/activity.csv`. `POST /api/activity` accepts `{app,start,end,category?,project?}`. Read operations are read-only; the collector upload is deliberately a separate write route. See `openapi.yaml` for a machine-readable subset. Keep the token server-side when adding an AI bridge; this browser client uses a tab-only token and does not persist it.
+## Verification
 
-## Database
-
-`supabase/migrations/0001_initial.sql` is an unapplied migration for a **new dedicated project**. The connected Aachman Studios and StudyFlow projects contain unrelated data and were left untouched. RLS scopes rows to `auth.uid()`. Do not apply this migration to either existing project without first choosing a home for Control Center.
-
-## Deployment and limitations
-
-This server is localhost-only and intentionally cannot be deployed as a Vercel static project. Before publishing: implement Supabase Auth, database persistence, production token management, scheduled adapters, HTTPS, rate limiting, and desktop packaging. No service-role key belongs in the browser or git. Source repository: `https://github.com/aachaman52/DashBoard-`. Clone it with `git clone https://github.com/aachaman52/DashBoard-.git`.
-
-## Checks
-
-`npm run check` runs syntax validation and unit tests. CI runs the same command. Current tests cover percent-change edge cases, time aggregation, and neutral browser classification. Further integration and end-to-end tests are needed before production use.
+`npm run check` runs lint, TypeScript checks, unit tests and a production build. API smoke checks confirm `/` loads, `/api/config` loads, and `/api/report` rejects anonymous requests. Full account-level, provider-level and physical Windows verification still require working credentials and a Windows device.

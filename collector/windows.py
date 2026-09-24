@@ -1,69 +1,116 @@
-"""Opt-in Windows application timing collector. Python 3.10+, no dependencies.
+"""Opt-in Windows collector. Python 3.10+, pip install keyring.
 
-Tracks executable name only. Does not inspect window titles or typed content.
-Press Ctrl+C to stop. Sessions shorter than 10 seconds are discarded.
+Tracks only foreground executable name and duration. Type pause, resume, quit.
+The Supabase refresh token is saved in Windows Credential Manager via keyring.
 """
 import ctypes
-import ctypes.wintypes as wintypes
+import ctypes.wintypes as wt
+import getpass
 import json
 import os
+import sys
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
 
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
-PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+try:
+    import keyring
+except ImportError:
+    sys.exit('Run: pip install keyring')
+
+user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+paused, running = False, True
 
 class LASTINPUTINFO(ctypes.Structure):
-    _fields_ = [('cbSize', wintypes.UINT), ('dwTime', wintypes.DWORD)]
+    _fields_ = [('cbSize', wt.UINT), ('dwTime', wt.DWORD)]
 
-def foreground():
+def api(url, method='GET', data=None, headers=None):
+    payload = json.dumps(data).encode() if data is not None else None
+    request = urllib.request.Request(url, payload, {'Content-Type': 'application/json', **(headers or {})}, method)
+    with urllib.request.urlopen(request, timeout=12) as response:
+        content = response.read()
+        return json.loads(content) if content else None
+
+def current_app():
     info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO), 0)
     user32.GetLastInputInfo(ctypes.byref(info))
-    idle = (kernel32.GetTickCount() - info.dwTime) & 0xffffffff
-    if idle >= 120000:
+    if ((kernel32.GetTickCount() - info.dwTime) & 0xffffffff) > 120000:
         return 'Idle'
-    window = user32.GetForegroundWindow()
-    pid = wintypes.DWORD()
-    user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
-    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+    pid = wt.DWORD()
+    user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(pid))
+    handle = kernel32.OpenProcess(0x1000, False, pid.value)
     if not handle:
         return 'Other'
     try:
-        size = wintypes.DWORD(32768)
-        buffer = ctypes.create_unicode_buffer(size.value)
-        kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size))
-        return os.path.basename(buffer.value)[:120] or 'Other'
+        size = wt.DWORD(32768)
+        buf = ctypes.create_unicode_buffer(size.value)
+        return os.path.basename(buf.value)[:120] if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)) else 'Other'
     finally:
         kernel32.CloseHandle(handle)
 
-def upload(name, start, end):
-    if end - start < 10:
-        return
-    base = os.environ.get('CONTROL_CENTER_URL', 'http://127.0.0.1:3000')
-    token = os.environ.get('CONTROL_CENTER_TOKEN', '')
-    if len(token) < 32:
-        raise RuntimeError('Set CONTROL_CENTER_TOKEN to the same 32+ character value as the server')
-    payload = json.dumps({'app': name, 'start': datetime.fromtimestamp(start, timezone.utc).isoformat(), 'end': datetime.fromtimestamp(end, timezone.utc).isoformat()}).encode()
-    request = urllib.request.Request(base + '/api/activity', payload, {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}, 'POST')
-    with urllib.request.urlopen(request, timeout=8) as response:
-        response.read()
+def category(name):
+    lower = name.lower()
+    if lower == 'idle': return 'Idle'
+    if any(x in lower for x in ('code.exe', 'unity', 'blender', 'devenv', 'idea64', 'pycharm')): return 'Development'
+    if 'excel' in lower: return 'Business'
+    return 'Other'  # Browsers are not assumed to be entertainment.
 
-if __name__ == '__main__':
-    print('Collector active. Executable names and time only. Ctrl+C stops tracking.')
-    current, started = foreground(), time.time()
+def commands():
+    global paused, running
+    while running:
+        try: cmd = input().strip().lower()
+        except EOFError: return
+        if cmd == 'pause': paused = True; print('Tracking paused.')
+        elif cmd == 'resume': paused = False; print('Tracking resumed.')
+        elif cmd == 'quit': running = False
+
+def main():
+    app_url = os.environ.get('CONTROL_CENTER_URL', 'http://127.0.0.1:3000').rstrip('/')
+    config = api(app_url + '/api/config')
+    base, key = config['supabaseUrl'], config['publishableKey']
+    if not base or not key: sys.exit('Supabase is not configured on the web app')
+    email = input('Account email: ').strip()
+    refresh = keyring.get_password('AachmanControlCenter', email)
+    session = None
+    if refresh:
+        try: session = api(base + '/auth/v1/token?grant_type=refresh_token', 'POST', {'refresh_token': refresh}, {'apikey': key})
+        except Exception: keyring.delete_password('AachmanControlCenter', email)
+    if not session:
+        session = api(base + '/auth/v1/token?grant_type=password', 'POST', {'email': email, 'password': getpass.getpass('Password: ')}, {'apikey': key})
+    keyring.set_password('AachmanControlCenter', email, session['refresh_token'])
+    expiry = time.time() + session['expires_in'] - 60
+    user = api(base + '/auth/v1/user', headers={'apikey': key, 'Authorization': 'Bearer ' + session['access_token']})
+
+    def upload(name, start, end):
+        nonlocal session, expiry
+        if end-start < 10: return
+        if time.time() >= expiry:
+            session = api(base + '/auth/v1/token?grant_type=refresh_token', 'POST', {'refresh_token': session['refresh_token']}, {'apikey': key})
+            keyring.set_password('AachmanControlCenter', email, session['refresh_token'])
+            expiry = time.time() + session['expires_in'] - 60
+        data = {'user_id': user['id'], 'app': name, 'category': category(name),
+                'started_at': datetime.fromtimestamp(start, timezone.utc).isoformat(),
+                'ended_at': datetime.fromtimestamp(end, timezone.utc).isoformat()}
+        api(base + '/rest/v1/cc_activity_sessions', 'POST', data, {'apikey': key, 'Authorization': 'Bearer ' + session['access_token'], 'Prefer': 'return=minimal'})
+
+    print('Tracking app names and time. Type pause, resume, or quit.')
+    threading.Thread(target=commands, daemon=True).start()
+    name, started = current_app(), time.time()
     try:
-        while True:
+        while running:
             time.sleep(5)
-            next_app = foreground()
-            if next_app != current or time.time() - started >= 300:
+            next_name = current_app() if not paused else None
+            if next_name != name or time.time()-started > 300:
                 ended = time.time()
-                try:
-                    upload(current, started, ended)
-                except Exception as error:
-                    print('Upload failed:', error)
-                current, started = next_app, ended
-    except KeyboardInterrupt:
-        upload(current, started, time.time())
-        print('Collector stopped.')
+                if name:
+                    try: upload(name, started, ended)
+                    except Exception as error: print('Sync failed:', error)
+                name, started = next_name, ended
+    except KeyboardInterrupt: pass
+    if name and not paused:
+        try: upload(name, started, time.time())
+        except Exception as error: print('Final sync failed:', error)
+    print('Tracking stopped.')
+
+if __name__ == '__main__': main()
