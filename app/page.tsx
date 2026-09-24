@@ -18,6 +18,13 @@ function Empty({children}:{children:string}){return <div className="empty"><Data
 function Trend({metrics,metric}:{metrics:Metric[];metric:string}){const values=metrics.filter(m=>m.metric===metric).sort((a,b)=>a.day.localeCompare(b.day));const days=[...new Set(values.map(x=>x.day))].slice(-21);const data=days.map(day=>({day:day.slice(5),value:values.filter(v=>v.day===day).reduce((a,v)=>a+Number(v.value),0)}));return data.length?<div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data}><defs><linearGradient id="area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#61d8b2" stopOpacity=".38"/><stop offset="100%" stopColor="#61d8b2" stopOpacity="0"/></linearGradient></defs><CartesianGrid vertical={false} stroke="#243442"/><XAxis dataKey="day" tickLine={false} axisLine={false} tick={{fill:'#8295a8',fontSize:11}}/><YAxis tickLine={false} axisLine={false} tick={{fill:'#8295a8',fontSize:11}}/><Tooltip contentStyle={{background:'#14242e',border:'1px solid #345063',borderRadius:10}}/><Area type="monotone" dataKey="value" stroke="#61d8b2" strokeWidth={3} fill="url(#area)"/></AreaChart></ResponsiveContainer></div>:<Empty>No historical data for this metric yet.</Empty>}
 
 export default function Home(){
+ if(!process.env.NEXT_PUBLIC_SUPABASE_URL||!process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY){
+  return <main className="setup-screen"><section className="panel"><h1>Supabase setup needed</h1><p>Add <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code> in Vercel Project Settings → Environment Variables, then redeploy this project.</p></section></main>;
+ }
+ return <Dashboard/>;
+}
+
+function Dashboard(){
  const supabase=useMemo(()=>browserClient(),[]);
  const [session,setSession]=useState<AuthSession|null>(null);const [loading,setLoading]=useState(true);const [page,setPage]=useState('overview');const [report,setReport]=useState<Report>(blank);const [error,setError]=useState('');const [busy,setBusy]=useState('');const [email,setEmail]=useState('');const [password,setPassword]=useState('');const [authMode,setAuthMode]=useState<'signin'|'signup'>('signin');const [selected,setSelected]=useState<string|null>(null);const [mobileNav,setMobileNav]=useState(false);
  const api=useCallback(async(path:string,method='GET',body?:unknown)=>{const {data:{session:current}}=await supabase.auth.getSession();if(!current)throw Error('Sign in first');const response=await fetch(path,{method,headers:{Authorization:`Bearer ${current.access_token}`,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});const result=await response.json();if(!response.ok)throw Error(result.error||`HTTP ${response.status}`);return result;},[supabase]);
